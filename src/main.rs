@@ -1,10 +1,50 @@
 use lightning::util::ser::{BigSize, Writeable};
+use std::env;
 
 static PAYLOAD_LIMIT: usize = 1300;
 
 fn main() {
-    let example = max_hops(BigSize(1000), true, 0);
-    println!("Onion Sizer {} hops / {} filler", example.0, example.1);
+    let mut amount = BigSize(1000);
+    let mut is_mpp = false;
+    let mut metadata = 0;
+
+    let args: Vec<String> = env::args().collect();
+    let mut i = 0;
+
+    for arg in args.iter() {
+        match i {
+            0 => {}
+            1 => {
+                let amount_u64 = arg.to_string().parse().unwrap();
+                amount = BigSize(amount_u64);
+            }
+            2 => {
+                is_mpp = match arg.as_ref() {
+                    "true" => true,
+                    "false" => false,
+                    "t" => true,
+                    "f" => false,
+                    "1" => true,
+                    "0" => false,
+                    _ => panic!("invalid mpp argument: {}", arg),
+                }
+            }
+            3 => {
+                metadata = arg.to_string().parse().unwrap();
+            }
+            _ => println!("Ignoring additional args"),
+        }
+
+        i += 1;
+    }
+
+    println!(
+        "Calculating max hops with amount: {}, mpp: {}, metadata: {}",
+        amount.0, is_mpp, metadata
+    );
+
+    let size = max_hops(amount, is_mpp, metadata);
+    println!("Onion Sizer {} hops / {} filler", size.0, size.1);
 }
 
 // Returns the maximum number of hops that will fit in the onion payload and
@@ -14,6 +54,8 @@ fn max_hops(amount: BigSize, is_mpp: bool, metadata_len: usize) -> (usize, usize
     // fields).
     let final_payload_tlvs = tlv_size(&amount, is_mpp, metadata_len);
     let final_payload_total = payload_size(final_payload_tlvs);
+
+    println!("Final hop bytes: {}", final_payload_total);
 
     // On the off chance that our final payload exceeds the limit, we can't
     // have any hops.
@@ -33,6 +75,11 @@ fn max_hops(amount: BigSize, is_mpp: bool, metadata_len: usize) -> (usize, usize
         if used_bytes + intermediate_payload_total > PAYLOAD_LIMIT {
             return (hops, PAYLOAD_LIMIT - used_bytes);
         }
+
+        println!(
+            "Intermediate hop {} bytes: {}",
+            hops, intermediate_payload_total
+        );
 
         // If we could fit our bytes within the remaining limit add them to
         // our total and increment hops.
