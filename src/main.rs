@@ -158,7 +158,8 @@ fn tlv_size(
         field_count += 1;
     }
 
-    // We need 4 bytes per field for type and length, followed by the total
-    // payload bytes we're storing.
-    field_count * 4 + payload_bytes
+    // We (generally) need 2 bytes per field for type and length, followed by
+    // the total payload bytes we're storing. Note that this will be incorrect
+    // for types or lengths > 253.
+    field_count* 2 + payload_bytes
 }
