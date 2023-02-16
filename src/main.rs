@@ -7,6 +7,7 @@ fn main() {
     let mut amount = BigSize(1000);
     let mut is_mpp = false;
     let mut metadata = 0;
+    let mut extra_payloads: Vec<usize> = Vec::new();
 
     let args: Vec<String> = env::args().collect();
     let mut i = 0;
@@ -32,27 +33,37 @@ fn main() {
             3 => {
                 metadata = arg.to_string().parse().unwrap();
             }
-            _ => println!("Ignoring additional args"),
+            _ => {
+                extra_payloads.push(arg.to_string().parse().unwrap());
+            }
         }
 
         i += 1;
     }
 
     println!(
-        "Calculating max hops with amount: {}, mpp: {}, metadata: {}",
-        amount.0, is_mpp, metadata
+        "Calculating max hops with amount: {}, mpp: {}, metadata: {}, extra payloads: {}",
+        amount.0,
+        is_mpp,
+        metadata,
+        extra_payloads.len(),
     );
 
-    let size = max_hops(amount, is_mpp, metadata);
-    println!("Onion Sizer {} hops / {} filler", size.0, size.1);
+    let size = max_hops(amount, is_mpp, metadata, &extra_payloads);
+    println!("\nOnion Sizer {} hops / {} filler", size.0, size.1);
 }
 
 // Returns the maximum number of hops that will fit in the onion payload and
 // the bytes in the filler.
-fn max_hops(amount: BigSize, is_mpp: bool, metadata_len: usize) -> (usize, usize) {
+fn max_hops(
+    amount: BigSize,
+    is_mpp: bool,
+    metadata_len: usize,
+    extra_payloads: &Vec<usize>,
+) -> (usize, usize) {
     // Start with payload for our final hop (which will have mpp and metadata
     // fields).
-    let final_payload_tlvs = tlv_size(&amount, is_mpp, metadata_len);
+    let final_payload_tlvs = tlv_size(&amount, is_mpp, metadata_len, extra_payloads);
     let final_payload_total = payload_size(final_payload_tlvs);
 
     println!("Final hop bytes: {}", final_payload_total);
@@ -63,31 +74,23 @@ fn max_hops(amount: BigSize, is_mpp: bool, metadata_len: usize) -> (usize, usize
         return (0, PAYLOAD_LIMIT);
     }
 
-    let mut hops = 1;
-    let mut used_bytes = final_payload_total;
+    // For intermediate hops, we don't include any mpp fields or metadata.
+    let intermediate_payload_tlvs = tlv_size(&amount, false, 0, extra_payloads);
+    let intermediate_payload_total = payload_size(intermediate_payload_tlvs);
 
-    while used_bytes <= PAYLOAD_LIMIT {
-        // For intermediate hops, we don't include any mpp fields or metadata.
-        let intermediate_payload_tlvs = tlv_size(&amount, false, 0);
-        let intermediate_payload_total = payload_size(intermediate_payload_tlvs);
+    let available_bytes = PAYLOAD_LIMIT - final_payload_total;
+    let intermediate_hops = available_bytes / intermediate_payload_total;
 
-        // If this payload would
-        if used_bytes + intermediate_payload_total > PAYLOAD_LIMIT {
-            return (hops, PAYLOAD_LIMIT - used_bytes);
-        }
+    println!(
+        "Intermediate hops: {} bytes: {}",
+        intermediate_hops, intermediate_payload_total
+    );
 
-        println!(
-            "Intermediate hop {} bytes: {}",
-            hops, intermediate_payload_total
-        );
-
-        // If we could fit our bytes within the remaining limit add them to
-        // our total and increment hops.
-        used_bytes += intermediate_payload_total;
-        hops += 1;
-    }
-
-    (hops, PAYLOAD_LIMIT - used_bytes)
+    // Our hop count is 1 + intermediate hops, with
+    (
+        1 + intermediate_hops,
+        available_bytes - (intermediate_hops * intermediate_payload_total),
+    )
 }
 
 fn payload_size(tlv_total: usize) -> usize {
@@ -112,7 +115,14 @@ fn payload_size(tlv_total: usize) -> usize {
 // * is_mpp: the final payload will need an extra 32 bytes for a payment_secret
 //   and to repeat the payment amount.
 // * metadata: arbitrary data for the final hop can have any size.
-fn tlv_size(amount: &BigSize, is_mpp: bool, metadata_len: usize) -> usize {
+// * extra_payloads: a vector of additional payload lengths, intended to
+//   capture the size requirements for any new fields added to the onion.
+fn tlv_size(
+    amount: &BigSize,
+    is_mpp: bool,
+    metadata_len: usize,
+    extra_payloads: &Vec<usize>,
+) -> usize {
     // Start with our payload size and field count assuming that we have a
     // short_channel_id, which is 8 bytes.
     let mut payload_bytes: usize = 8;
@@ -138,6 +148,13 @@ fn tlv_size(amount: &BigSize, is_mpp: bool, metadata_len: usize) -> usize {
     // If there's non-zero metadata, include it and increment field count.
     if metadata_len != 0 {
         payload_bytes += metadata_len;
+        field_count += 1;
+    }
+
+    // If there are any extra payloads included in the hop, add each of their
+    // lengths.
+    for p in extra_payloads {
+        payload_bytes += p;
         field_count += 1;
     }
 
